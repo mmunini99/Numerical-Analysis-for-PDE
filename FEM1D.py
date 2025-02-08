@@ -61,6 +61,31 @@ def apply_boundary_conditions(N, A, F, lb, ub):
 
     return A, F
 
+def apply_boundary_conditions_kcase(omega, A, F, lb, ub):
+  # Ideally should scale entries as those of A
+  N = A.shape[0] - 1
+  A[0,A[0].nonzero()] = 0; A[0,0] = 1;  F[0]=lb
+  A[N,A[N].nonzero()] = 0; A[N,N] = 1; F[N]=ub
+
+  return A, F
+
+# Workaround, to allow lambdify to work also on constant expressions
+def np_lambdify(varname, func):
+    lamb = sym.lambdify(varname, func, modules=['numpy'])
+    if func.is_constant():
+        return lambda t: np.full_like(t, lamb(t))
+    else:
+        return lambda t: lamb(np.array(t))
+
+def lagrange_basis(q, i):
+    assert i < len(q)
+    assert i >= 0
+    return lambda x: np.prod([(x-q[j])/(q[i]-q[j]) for j in range(len(q)) if i!=j], axis=0)
+
+def lagrange_basis_derivative(q,i,order=1):
+    t = sym.var('t')
+    return np_lambdify(t, lagrange_basis(q,i)(t).diff(t,order))
+
 
 
 class FEM1_1D(object):
@@ -177,3 +202,108 @@ class FEM1_1D(object):
         A, F = apply_boundary_conditions(self.N, A, F, self.lb, self.ub)
         # return system matrix and rhs vector
         return A, F
+
+
+
+
+
+class FEM_k_1D(object):
+
+    def __init__(self, omega, k, M, quad_points, rhs, lb, ub, unif):
+
+        self.omega = omega
+        self.k = k
+        self.M = M
+        self.quad_points = quad_points
+        self.rhs = rhs
+        self.lb = lb
+        self.ub = ub
+        self.unif = unif
+
+    def FEM_POISSON(self):
+
+        # Dimension of the problem
+        N = self.M*self.k +1
+
+        # grid
+        if self.unif:
+            vertices = unif_mesh(self.omega, self.M)
+        else:
+            vertices = non_uniform_mesh(self.omega, self.M, 0.72)
+
+        # reference element (quadrature and Lagrange points)
+        q, w = quadrature(self.quad_points)
+        lagrange_points = np.linspace(0, 1, self.k+1)
+
+        # Evaluation of Lagrange basis
+        phi = np.array([lagrange_basis(lagrange_points,i)(q) for i in range(self.k+1)]).T
+        dphi = np.array([lagrange_basis_derivative(lagrange_points,i)(q) for i in range(self.k+1)]).T
+
+        # initialise system
+        A = sp.lil_matrix((N,N))
+        F = np.zeros(N)
+
+        # Assembly loop
+        for i in range(self.M):
+            JxW = mapping_J(vertices, i) * w
+            ele_A = np.einsum('qi,qj,q',dphi,dphi,JxW) / mapping_J(vertices,i)**2
+            ele_F = np.einsum('qi,q,q',phi,self.rhs(mapping(vertices,i)(q)),JxW)
+
+            # Assembly local-to-global
+            j = i * self.k
+            m = j + self.k + 1
+            A[j:m,j:m] += ele_A
+            F[j:m] += ele_F
+
+
+        A, F = apply_boundary_conditions_kcase(self.omega, A, F, self.lb, self.ub)
+
+
+        return A, F
+
+
+
+    def FEM1_H1(self, Uh, sol, symbol):
+
+        derivative = sym.lambdify(symbol, sol.diff(symbol,1)) # the solution must be sympy function format
+
+        # Dimension of the problem
+        N = self.M*self.k +1
+
+        # grid
+        if self.unif:
+            vertices = unif_mesh(self.omega, self.M)
+        else:
+            vertices = non_uniform_mesh(self.omega, self.M, 0.72)
+
+        # reference element (quadrature and Lagrange points)
+        q, w = quadrature(self.quad_points)
+        lagrange_points = np.linspace(0, 1, self.k+1)
+
+        # Evaluation of Lagrange basis
+        phi = np.array([lagrange_basis(lagrange_points,i)(q) for i in range(self.k+1)]).T
+        dphi = np.array([lagrange_basis_derivative(lagrange_points,i)(q) for i in range(self.k+1)]).T
+
+        # initialise error
+        err_H1 = 0.0
+        
+        # Assembly loop
+        for i in range(self.M - 1):
+                JxW = mapping_J(vertices, i) * w  # Compute JxW once per element
+            
+
+                # Get exact solution values at quadrature points
+                sol_values = derivative(mapping(vertices, i)(q))
+
+                # Compute the Uh part for the basis derivatives
+                Uh_dphi = Uh[i * self.k:i* self.k + dphi.shape[0] -1] @ dphi.T  # Uh * dphi
+
+                # Compute the error element-wise
+                local_err = np.einsum('j,j,j->', (sol_values - Uh_dphi / mapping_J(vertices, i)) ** 2, JxW, np.ones_like(JxW))
+
+                # Add to the total error
+                err_H1 += local_err
+
+
+        # Return error
+        return err_H1
