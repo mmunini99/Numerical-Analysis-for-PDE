@@ -16,12 +16,27 @@ def unif_mesh(omega,N):
     return np.linspace(omega[0],omega[1],N+1)
 
 
+# def non_uniform_mesh(omega, N, alpha):
+#     # Generate mesh points using exponential spacing
+#     x = omega[0] + (omega[1] - omega[0]) * (np.arange(N+1) / (N))**alpha
+#     return x
+
 def non_uniform_mesh(omega, N, alpha):
-    # Generate mesh points using exponential spacing
-    x = omega[0] + (omega[1] - omega[0]) * (np.arange(N+1) / (N))**alpha
-    return x
 
+    base = np.linspace(omega[0],omega[1],N+1)
 
+    h = np.diff(base).min()
+
+    l = h/10
+
+    noise = np.random.uniform(low=-1, high=1, size=len(base)-2)
+
+    base[1: -1] = base[1: -1]+ noise*l
+    
+    return base
+#     # Generate mesh points using exponential spacing
+#     x = omega[0] + (omega[1] - omega[0]) * (np.arange(N+1) / (N))**alpha
+#     return x
 
 def mapping(q, i):
     # check index is within range
@@ -99,6 +114,7 @@ class FEM1_1D(object):
         self.lb = lb
         self.ub = ub
         self.unif = unif
+        
 
 
     def FEM_POISSON(self):
@@ -107,7 +123,7 @@ class FEM1_1D(object):
         if self.unif:
             vertices = unif_mesh(self.omega, self.N)
         else:
-            vertices = non_uniform_mesh(self.omega, self.N, 0.72)
+            vertices = non_uniform_mesh(self.omega, self.N, 0.84)
 
         # quadrature formula on reference element
         q, w = quadrature(self.quad_points)
